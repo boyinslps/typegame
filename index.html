@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>班級打字競賽 - 限時挑戰模式</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
+    <style>
+        .char { position: relative; display: inline-block; transition: all 0.2s; border-bottom: 2px solid transparent; min-width: 0.6em; }
+        .char.current { border-bottom-color: #3b82f6; background-color: #dbeafe; }
+        .char.correct { color: #10b981; }
+        .char.incorrect { color: #ef4444; background-color: #fee2e2; }
+        .char.pending { color: #9ca3af; }
+        
+        /* 顯示 Enter 符號的樣式 */
+        .char.newline::after {
+            content: "⏎";
+            font-size: 0.8em;
+            margin-left: 2px;
+            opacity: 0.7;
+        }
+
+        #text-display { 
+            line-height: 1.8; 
+            letter-spacing: 0.05em; 
+            font-size: 1.5rem; 
+            word-break: break-all; 
+            white-space: pre-wrap; /* 關鍵：保留換行與空格 */
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        }
+        
+        .glass-morphism { background: rgba(255, 255, 255, 0.9); backdrop-filter: blur(10px); }
+        .score-pop { animation: pop 0.3s ease-out; }
+        @keyframes pop {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.2); color: #4f46e5; }
+            100% { transform: scale(1); }
+        }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen text-slate-800">
+
+<div id="app" class="max-w-5xl mx-auto p-4 md:p-8">
+    <header class="flex justify-between items-center mb-8">
+        <div>
+            <h1 class="text-3xl font-bold text-indigo-600">⌨️ 限時打字字詞賽</h1>
+            <p id="room-status" class="text-sm text-slate-500 italic">準備挑戰最高分！每個字詞 +100</p>
+        </div>
+        <button id="admin-toggle" class="text-slate-400 hover:text-indigo-500 text-xs underline">教師模式</button>
+    </header>
+
+    <!-- 登入畫面 -->
+    <div id="join-screen" class="glass-morphism rounded-2xl p-8 shadow-xl text-center max-w-md mx-auto">
+        <h2 class="text-2xl font-semibold mb-4">輸入姓名開始挑戰</h2>
+        <input type="text" id="username-input" placeholder="輸入你的姓名" class="w-full p-3 border-2 border-slate-200 rounded-lg mb-4 focus:border-indigo-500 outline-none">
+        <button id="start-btn" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-bold hover:bg-indigo-700 transition">進入競賽</button>
+    </div>
+
+    <!-- 遊戲主畫面 -->
+    <div id="game-screen" class="hidden grid grid-cols-1 lg:grid-cols-3 gap-8">
+        <div class="lg:col-span-2 space-y-6">
+            <div class="glass-morphism rounded-2xl p-6 shadow-lg">
+                <div class="flex justify-between items-end mb-4 border-b pb-2">
+                    <div id="stats" class="flex gap-6 text-sm font-medium">
+                        <span class="text-indigo-600 text-lg">總分: <span id="current-score" class="font-bold">0</span></span>
+                        <span class="text-emerald-600">正確字詞: <span id="correct-words">0</span></span>
+                        <span class="text-orange-500">最高紀錄: <span id="personal-best">0</span></span>
+                    </div>
+                    <div id="timer" class="text-3xl font-mono font-bold text-red-500">--s</div>
+                </div>
+                
+                <div id="text-display" class="bg-white p-6 rounded-xl border border-slate-100 min-h-[200px] mb-4 select-none">
+                    <!-- 渲染區 -->
+                </div>
+
+                <div class="relative">
+                    <!-- 使用 textarea 才能抓到 Enter 鍵的輸入 -->
+                    <textarea id="hidden-input" autocomplete="off" class="w-full p-3 border-2 border-slate-100 rounded-lg focus:border-indigo-300 outline-none text-lg resize-none overflow-hidden h-14" placeholder="在此處開始打字..."></textarea>
+                </div>
+                <div class="mt-4 flex justify-between items-center text-xs text-slate-400">
+                    <span>提示：看到 ⏎ 請按 Enter 鍵換行。系統會判定大小寫。</span>
+                    <button id="restart-btn" class="bg-slate-100 hover:bg-slate-200 text-slate-600 px-4 py-2 rounded-lg transition">重新開始</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 排行榜 -->
+        <div class="glass-morphism rounded-2xl p-6 shadow-lg h-fit">
+            <h3 class="text-xl font-bold mb-4 flex items-center gap-2">🏆 排行榜 (積分制)</h3>
+            <div id="leaderboard-list" class="space-y-3">
+                <p class="text-center text-slate-400 py-4 italic">載入中...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- 教師身份驗證面板 -->
+    <div id="admin-auth-panel" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-[60]">
+        <div class="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+            <h2 class="text-xl font-bold mb-4">請輸入教師密碼</h2>
+            <input type="password" id="admin-password-input" class="w-full p-3 border rounded-lg mb-4 outline-none focus:ring-2 ring-indigo-500" placeholder="Password">
+            <div class="flex gap-3">
+                <button id="confirm-auth" class="flex-1 bg-indigo-600 text-white py-2 rounded-lg font-bold">確認</button>
+                <button id="cancel-auth" class="flex-1 bg-slate-200 text-slate-600 py-2 rounded-lg font-bold">取消</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 教師主控台面板 -->
+    <div id="admin-panel" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
+        <div class="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
+            <h2 class="text-xl font-bold mb-4">教師主控台</h2>
+            <label class="block text-sm text-slate-500 mb-2">設定比賽題目：</label>
+            <textarea id="admin-text-input" class="w-full h-40 p-3 border rounded-lg mb-4 outline-none focus:ring-2 ring-indigo-500"></textarea>
+            <label class="block text-sm text-slate-500 mb-2">比賽時間 (秒)：</label>
+            <input type="number" id="admin-time-input" value="60" class="w-full p-2 border rounded-lg mb-4">
+            <div class="flex gap-3">
+                <button id="save-config" class="flex-1 bg-indigo-600 text-white py-2 rounded-lg font-bold">更新全班比賽設定</button>
+                <button id="close-admin" class="flex-1 bg-slate-200 text-slate-600 py-2 rounded-lg font-bold">關閉</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, query, updateDoc, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    const firebaseConfig = JSON.parse(__firebase_config);
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+    const db = getFirestore(app);
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'typing-contest-words';
+
+    const ADMIN_PASSWORD = "teacher"; 
+
+    let currentUser = null;
+    let targetText = "";
+    let gameTimeLimit = 60;
+    let timeLeft = 60;
+    let timerInterval = null;
+    let isFinished = false;
+    let personalBest = 0;
+    let isComposing = false;
+    
+    let totalScore = 0;
+    let correctWordCount = 0;
+    let completedLoops = 0;
+
+    const configDocRef = doc(db, 'artifacts', appId, 'public', 'data', 'config', 'settings');
+    const scoresColRef = collection(db, 'artifacts', appId, 'public', 'data', 'scores');
+
+    /**
+     * 正規化字元
+     */
+    function normalizeChar(char) {
+        if (!char) return "";
+        let c = char.charCodeAt(0);
+        if (c >= 65281 && c <= 65374) {
+            char = String.fromCharCode(c - 65248);
+        } else if (c === 12288) {
+            char = " ";
+        }
+        // 統一換行符號判定
+        if (char === '\r') return '\n';
+        return char;
+    }
+
+    /**
+     * 計算字詞數
+     */
+    function countWordsInString(str) {
+        if (!str) return 0;
+        // 中文字元、連續英文字母、或者換行符號（視為一個結尾點）
+        const tokens = str.match(/[\u4e00-\u9fa5]|[a-zA-Z]+|\n/g);
+        return tokens ? tokens.length : 0;
+    }
+
+    async function init() {
+        try {
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                await signInWithCustomToken(auth, __initial_auth_token);
+            } else {
+                await signInAnonymously(auth);
+            }
+            onAuthStateChanged(auth, (user) => {
+                if (user) {
+                    currentUser = user;
+                    setupListeners();
+                }
+            });
+        } catch (error) { console.error(error); }
+    }
+
+    function setupListeners() {
+        onSnapshot(configDocRef, (docSnap) => {
+            if (docSnap.exists()) {
+                const data = docSnap.data();
+                targetText = data.text || "請設定題目";
+                gameTimeLimit = data.duration || 60;
+                document.getElementById('room-status').textContent = `比賽準備就緒 (${gameTimeLimit}秒)`;
+                renderText();
+            }
+        });
+
+        onSnapshot(scoresColRef, (snapshot) => {
+            const scores = [];
+            snapshot.forEach(doc => {
+                const data = doc.data();
+                scores.push(data);
+                if (doc.id === currentUser.uid) {
+                    personalBest = data.score || 0;
+                    document.getElementById('personal-best').textContent = personalBest;
+                }
+            });
+            scores.sort((a, b) => b.score - a.score);
+            updateLeaderboardUI(scores);
+        });
+    }
+
+    function renderText() {
+        const display = document.getElementById('text-display');
+        display.innerHTML = '';
+        [...targetText].forEach((char, i) => {
+            const span = document.createElement('span');
+            span.id = `char-${i}`;
+            
+            if (char === '\n') {
+                span.textContent = ""; // 換行不直接顯示文字內容
+                span.className = 'char pending newline';
+                display.appendChild(span);
+                display.appendChild(document.createElement('br')); // 強制網頁換行
+            } else {
+                span.textContent = char;
+                span.className = 'char pending';
+                display.appendChild(span);
+            }
+        });
+        resetGame();
+    }
+
+    function resetGame() {
+        isFinished = false;
+        timeLeft = gameTimeLimit;
+        totalScore = 0;
+        correctWordCount = 0;
+        completedLoops = 0;
+        if (timerInterval) clearInterval(timerInterval);
+        timerInterval = null;
+        document.getElementById('timer').textContent = `${timeLeft}s`;
+        document.getElementById('timer').classList.remove('text-red-600', 'animate-pulse');
+        document.getElementById('current-score').textContent = "0";
+        document.getElementById('correct-words').textContent = "0";
+        document.getElementById('hidden-input').value = '';
+        document.getElementById('hidden-input').disabled = false;
+        
+        const chars = document.querySelectorAll('.char');
+        chars.forEach(c => c.className = c.classList.contains('newline') ? 'char pending newline' : 'char pending');
+        if (chars[0]) chars[0].classList.add('current');
+    }
+
+    function startTimer() {
+        if (timerInterval) return;
+        timerInterval = setInterval(() => {
+            timeLeft--;
+            document.getElementById('timer').textContent = `${timeLeft}s`;
+            if (timeLeft <= 10 && timeLeft > 0) {
+                document.getElementById('timer').classList.add('text-red-600', 'animate-pulse');
+            }
+            if (timeLeft <= 0) {
+                finishGame();
+            }
+        }, 1000);
+    }
+
+    function processInput(fullInputValue) {
+        if (isFinished || !targetText) return;
+        if (!timerInterval && fullInputValue.length > 0) startTimer();
+
+        let currentCorrectInThisLoop = "";
+        
+        for (let i = 0; i < targetText.length; i++) {
+            const span = document.getElementById(`char-${i}`);
+            if (!span) continue;
+
+            if (i < fullInputValue.length) {
+                const typed = normalizeChar(fullInputValue[i]);
+                const target = normalizeChar(targetText[i]);
+                
+                if (typed === target) {
+                    span.classList.remove('pending', 'incorrect');
+                    span.classList.add('correct');
+                    currentCorrectInThisLoop += targetText[i];
+                } else {
+                    span.classList.remove('pending', 'correct');
+                    span.classList.add('incorrect');
+                }
+            } else {
+                span.classList.remove('correct', 'incorrect');
+                span.classList.add('pending');
+            }
+            span.classList.remove('current');
+        }
+
+        const wordsInCompleted = countWordsInString(targetText) * completedLoops;
+        const wordsInCurrent = countWordsInString(currentCorrectInThisLoop);
+        
+        correctWordCount = wordsInCompleted + wordsInCurrent;
+        const newScore = correctWordCount * 100;
+        
+        if (newScore > totalScore) {
+            document.getElementById('current-score').classList.add('score-pop');
+            setTimeout(() => document.getElementById('current-score').classList.remove('score-pop'), 300);
+        }
+        
+        totalScore = newScore;
+        document.getElementById('current-score').textContent = totalScore;
+        document.getElementById('correct-words').textContent = correctWordCount;
+
+        const inputLen = fullInputValue.length;
+        if (inputLen < targetText.length) {
+            const nextSpan = document.getElementById(`char-${inputLen}`);
+            if (nextSpan) {
+                nextSpan.classList.add('current');
+                // 換行時自動滾動
+                if (nextSpan.classList.contains('newline')) {
+                    nextSpan.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }
+        } else {
+            completedLoops++;
+            document.getElementById('hidden-input').value = '';
+            renderText(); // 重新渲染以重置所有 span
+        }
+    }
+
+    const inputElement = document.getElementById('hidden-input');
+    inputElement.addEventListener('compositionstart', () => isComposing = true);
+    inputElement.addEventListener('compositionend', (e) => {
+        isComposing = false;
+        processInput(e.target.value);
+    });
+    inputElement.addEventListener('input', (e) => {
+        if (isComposing) return;
+        processInput(e.target.value);
+    });
+
+    async function finishGame() {
+        isFinished = true;
+        clearInterval(timerInterval);
+        inputElement.disabled = true;
+        document.getElementById('timer').textContent = "Time Up!";
+        
+        if (totalScore > personalBest || personalBest === 0) {
+            confetti({ particleCount: 150, spread: 70, origin: { y: 0.6 } });
+            const username = document.getElementById('username-input').value || '挑戰者';
+            await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'scores', currentUser.uid), {
+                username,
+                score: totalScore,
+                words: correctWordCount,
+                timestamp: serverTimestamp()
+            });
+        }
+    }
+
+    function updateLeaderboardUI(scores) {
+        const list = document.getElementById('leaderboard-list');
+        list.innerHTML = '';
+        scores.slice(0, 10).forEach((data, index) => {
+            const item = document.createElement('div');
+            item.className = `flex items-center justify-between p-3 rounded-lg ${index === 0 ? 'bg-amber-50 border border-amber-200' : 'bg-white border border-slate-100'}`;
+            item.innerHTML = `
+                <div class="flex items-center gap-3">
+                    <span class="font-bold w-6 text-slate-400">${index + 1}.</span>
+                    <span class="font-medium">${data.username}</span>
+                </div>
+                <div class="text-right">
+                    <div class="font-bold text-indigo-600">${data.score}</div>
+                    <div class="text-[10px] text-slate-400">${data.words} 字詞</div>
+                </div>
+            `;
+            list.appendChild(item);
+        });
+    }
+
+    document.getElementById('start-btn').addEventListener('click', () => {
+        const name = document.getElementById('username-input').value.trim();
+        if (!name) return alert('請輸入姓名');
+        document.getElementById('join-screen').classList.add('hidden');
+        document.getElementById('game-screen').classList.remove('hidden');
+        renderText();
+        setTimeout(() => inputElement.focus(), 100);
+    });
+
+    document.getElementById('restart-btn').addEventListener('click', () => {
+        renderText();
+        inputElement.focus();
+    });
+
+    document.getElementById('admin-toggle').addEventListener('click', () => {
+        document.getElementById('admin-auth-panel').classList.remove('hidden');
+        document.getElementById('admin-password-input').value = "";
+        document.getElementById('admin-password-input').focus();
+    });
+
+    document.getElementById('cancel-auth').addEventListener('click', () => {
+        document.getElementById('admin-auth-panel').classList.add('hidden');
+    });
+
+    document.getElementById('confirm-auth').addEventListener('click', () => {
+        const inputPass = document.getElementById('admin-password-input').value;
+        if (inputPass === ADMIN_PASSWORD) {
+            document.getElementById('admin-auth-panel').classList.add('hidden');
+            document.getElementById('admin-panel').classList.remove('hidden');
+            document.getElementById('admin-text-input').value = targetText;
+            document.getElementById('admin-time-input').value = gameTimeLimit;
+        } else {
+            alert("密碼錯誤！");
+        }
+    });
+
+    document.getElementById('close-admin').addEventListener('click', () => {
+        document.getElementById('admin-panel').classList.add('hidden');
+    });
+
+    document.getElementById('save-config').addEventListener('click', async () => {
+        const text = document.getElementById('admin-text-input').value.trim();
+        const duration = parseInt(document.getElementById('admin-time-input').value);
+        if (text && duration) {
+            await setDoc(configDocRef, { text, duration });
+            document.getElementById('admin-panel').classList.add('hidden');
+        }
+    });
+
+    init();
+</script>
+</body>
+</html>
