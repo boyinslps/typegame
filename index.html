@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>班級打字王</title>
+    <title>班級打字競賽 - 教師進階管理版</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
     <style>
@@ -62,7 +62,7 @@
         </div>
 
         <div class="glass-morphism rounded-2xl p-6 shadow-lg h-fit border border-white">
-            <h3 class="text-xl font-bold mb-4 flex items-center gap-2">🏆 即時排行 (前 10 名)</h3>
+            <h3 id="leaderboard-title" class="text-xl font-bold mb-4 flex items-center gap-2">🏆 即時排行</h3>
             <div id="leaderboard-list" class="space-y-3">
                 </div>
         </div>
@@ -80,13 +80,31 @@
     </div>
 
     <div id="admin-panel" class="hidden fixed inset-0 bg-black/50 flex items-center justify-center p-4 z-50">
-        <div class="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl">
-            <h2 class="text-xl font-bold mb-4">全班題目設定</h2>
-            <textarea id="admin-text-input" class="w-full h-40 p-3 border rounded-lg mb-4" placeholder="請輸入題目..."></textarea>
-            <label class="block mb-2 text-sm text-slate-600">比賽時間 (秒)：</label>
-            <input type="number" id="admin-time-input" value="60" class="w-full p-2 border rounded-lg mb-4">
+        <div class="bg-white rounded-2xl p-6 w-full max-w-lg shadow-2xl max-h-[90vh] overflow-y-auto">
+            <h2 class="text-xl font-bold mb-4">全班題目與系統設定</h2>
+            
+            <label class="block mb-1 text-sm font-bold text-slate-600">比賽題目內容：</label>
+            <textarea id="admin-text-input" class="w-full h-32 p-3 border rounded-lg mb-4" placeholder="請輸入題目..."></textarea>
+            
+            <div class="grid grid-cols-2 gap-4 mb-4">
+                <div>
+                    <label class="block mb-1 text-sm font-bold text-slate-600">比賽時間 (秒)：</label>
+                    <input type="number" id="admin-time-input" value="60" class="w-full p-2 border rounded-lg">
+                </div>
+                <div>
+                    <label class="block mb-1 text-sm font-bold text-slate-600">顯示排行人數：</label>
+                    <input type="number" id="admin-limit-input" value="10" class="w-full p-2 border rounded-lg">
+                </div>
+            </div>
+
+            <div class="mb-6 border-t pt-4">
+                <button id="clear-leaderboard" class="w-full bg-red-50 text-red-600 border border-red-200 py-2 rounded-lg font-bold hover:bg-red-500 hover:text-white transition">
+                    🗑️ 清空目前所有學生的成績
+                </button>
+            </div>
+
             <div class="flex gap-3">
-                <button id="save-config" class="flex-1 bg-indigo-600 text-white py-2 rounded-lg font-bold">同步更新題目</button>
+                <button id="save-config" class="flex-1 bg-indigo-600 text-white py-2 rounded-lg font-bold shadow-md">同步更新設定</button>
                 <button id="close-admin" class="flex-1 bg-slate-200 py-2 rounded-lg">關閉</button>
             </div>
         </div>
@@ -96,9 +114,9 @@
 <script type="module">
     import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-app.js";
     import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-auth.js";
-    import { getFirestore, doc, setDoc, collection, onSnapshot, query, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
+    // 新增導入 getDocs 與 deleteDoc
+    import { getFirestore, doc, setDoc, deleteDoc, getDocs, collection, onSnapshot, query, orderBy, limit, serverTimestamp } from "https://www.gstatic.com/firebasejs/11.0.1/firebase-firestore.js";
 
-    // Firebase 配置 (請確保與你的專案一致)
     const firebaseConfig = {
         apiKey: "AIzaSyDGmJcE6A_gLVcMbmuCQTZ4Ny5eGKQ6bsw",
         authDomain: "school-4c9bf.firebaseapp.com",
@@ -116,13 +134,22 @@
     let currentUser = null, targetText = "", gameTimeLimit = 60, timeLeft = 60;
     let timerInterval = null, isFinished = false, isComposing = false;
     let totalScore = 0, correctWordCount = 0, completedLoops = 0, personalBest = 0;
+    
+    // 新增：動態排行顯示數量，預設 10
+    let displayRankLimit = 10; 
 
     const configDocRef = doc(db, 'competition', 'settings');
     const scoresColRef = collection(db, 'scores');
 
+    /**
+     * 正規表達式更新：
+     * [\u4e00-\u9fa5] 涵蓋中文字
+     * [\u3105-\u312f] 涵蓋注音符號 (包含 ㄅㄆㄇ 等，獨立計算)
+     * [a-zA-Z0-9]+ 涵蓋連續的英文單字與數字
+     */
     function countWordsInString(str) {
         if (!str) return 0;
-        const tokens = str.match(/[\u4e00-\u9fa5]|[a-zA-Z0-9]+|\n/g);
+        const tokens = str.match(/[\u4e00-\u9fa5]|[\u3105-\u312f]|[a-zA-Z0-9]+|\n/g);
         return tokens ? tokens.length : 0;
     }
 
@@ -139,17 +166,23 @@
         onAuthStateChanged(auth, (user) => {
             if (user) {
                 currentUser = user;
+                
+                // 監聽設定檔
                 onSnapshot(configDocRef, (docSnap) => {
                     if (docSnap.exists()) {
                         const data = docSnap.data();
                         targetText = data.text || "";
                         gameTimeLimit = data.duration || 60;
+                        displayRankLimit = data.leaderboardLimit || 10; // 讀取老師設定的人數
+                        
                         document.getElementById('room-status').textContent = `目標設定：${gameTimeLimit}秒`;
+                        document.getElementById('leaderboard-title').innerHTML = `🏆 即時排行 (前 ${displayRankLimit} 名)`;
+                        
                         fullReset();
                     }
                 });
                 
-                // 讀取較多排名資料以計算「前一名差距」，但顯示上限由 UI 控制
+                // 抓取排行資料
                 const q = query(scoresColRef, orderBy("score", "desc"), limit(40));
                 onSnapshot(q, (snapshot) => {
                     const scores = [];
@@ -207,7 +240,6 @@
         }
     }
 
-    // 更新「距離前一名還差多遠」的提示
     function updateChallengeTarget(scores) {
         const box = document.getElementById('challenge-box');
         const msg = document.getElementById('target-message');
@@ -220,17 +252,17 @@
 
         const myIndex = scores.findIndex(s => s.id === currentUser.uid);
         
-        if (myIndex > 0) { // 如果我不是第一名
+        if (myIndex > 0) {
             const prevPlayer = scores[myIndex - 1];
             const diff = prevPlayer.score - totalScore;
             
             box.classList.remove('hidden');
             if (diff > 0) {
-                msg.innerText = `距離前一名還差 ${diff} 分`;
+                msg.innerText = `距離前一名「${prevPlayer.username}」還差 ${diff} 分`;
             } else {
-                msg.innerText = `太棒了！`;
+                msg.innerText = `太棒了！你目前超越了「${prevPlayer.username}」`;
             }
-        } else if (myIndex === 0) { // 我是第一名
+        } else if (myIndex === 0) {
             box.classList.remove('hidden');
             msg.innerText = `🏆 你是目前的全班冠軍！保持領先！`;
         }
@@ -304,11 +336,10 @@
         const myId = currentUser.uid;
         const myIndex = scores.findIndex(s => s.id === myId);
 
-        // 繪製邏輯
         scores.forEach((data, index) => {
-            // 條件：前 10 名，或者是「我本人」
-            if (index < 10 || index === myIndex) {
-                if (index === myIndex && index >= 10) {
+            // 使用變數 displayRankLimit 替代原本寫死的 10
+            if (index < displayRankLimit || index === myIndex) {
+                if (index === myIndex && index >= displayRankLimit) {
                     const divider = document.createElement('div');
                     divider.className = "text-center text-slate-300 py-1";
                     divider.innerText = "⋮ (你在這裡) ⋮";
@@ -347,6 +378,7 @@
     inputArea.addEventListener('compositionend', (e) => { isComposing = false; processInput(e.target.value); });
     inputArea.addEventListener('input', (e) => { if (!isComposing) processInput(e.target.value); });
 
+    // 教師驗證
     document.getElementById('admin-toggle').addEventListener('click', () => document.getElementById('admin-auth-panel').classList.remove('hidden'));
     document.getElementById('confirm-auth').addEventListener('click', () => {
         if (document.getElementById('admin-password-input').value === ADMIN_PASSWORD) {
@@ -354,13 +386,43 @@
             document.getElementById('admin-panel').classList.remove('hidden');
             document.getElementById('admin-text-input').value = targetText;
             document.getElementById('admin-time-input').value = gameTimeLimit;
+            document.getElementById('admin-limit-input').value = displayRankLimit;
         } else alert("密碼錯誤");
     });
+    
+    // 清空排行榜邏輯
+    document.getElementById('clear-leaderboard').addEventListener('click', async () => {
+        const confirmClear = confirm("確定要清空全班目前的排行榜嗎？此動作無法復原喔！");
+        if (confirmClear) {
+            const btn = document.getElementById('clear-leaderboard');
+            btn.textContent = "資料清空中...";
+            btn.disabled = true;
+            try {
+                // 抓取所有 scores 集合內的文件並一一刪除
+                const querySnapshot = await getDocs(scoresColRef);
+                const deletePromises = [];
+                querySnapshot.forEach((docSnap) => {
+                    deletePromises.push(deleteDoc(docSnap.ref));
+                });
+                await Promise.all(deletePromises);
+                alert("✅ 排行榜已成功清空！");
+            } catch (error) {
+                console.error("清空失敗：", error);
+                alert("清空失敗，請檢查 Firebase 安全規則是否已開啟刪除權限。");
+            }
+            btn.textContent = "🗑️ 清空目前所有學生的成績";
+            btn.disabled = false;
+        }
+    });
+
+    // 儲存設定
     document.getElementById('save-config').addEventListener('click', async () => {
         const text = document.getElementById('admin-text-input').value.trim();
-        const duration = parseInt(document.getElementById('admin-time-input').value);
+        const duration = parseInt(document.getElementById('admin-time-input').value) || 60;
+        const limitVal = parseInt(document.getElementById('admin-limit-input').value) || 10;
+        
         if (text && duration) {
-            await setDoc(configDocRef, { text, duration });
+            await setDoc(configDocRef, { text, duration, leaderboardLimit: limitVal });
             document.getElementById('admin-panel').classList.add('hidden');
         }
     });
