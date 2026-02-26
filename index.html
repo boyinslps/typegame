@@ -190,10 +190,19 @@
     const configDocRef = doc(db, 'competition', 'settings');
     const scoresColRef = collection(db, 'scores');
 
-    function countWordsInString(str) {
+    // 國際標準 WPM 字數計算：中文算 1 字，英數/標點/空白每 5 字元算 1 字
+    function calculateStandardWords(str) {
         if (!str) return 0;
-        const tokens = str.match(/[\u4e00-\u9fa5]|[\u3105-\u312f]|[a-zA-Z0-9]+|\n/g);
-        return tokens ? tokens.length : 0;
+        let chineseCount = 0;
+        let otherCount = 0;
+        for (let char of str) {
+            if (/[\u4e00-\u9fa5\u3105-\u312f]/.test(char)) {
+                chineseCount++;
+            } else if (char !== '\n' && char !== '\r') {
+                otherCount++;
+            }
+        }
+        return chineseCount + (otherCount / 5);
     }
 
     function normalizeChar(char) {
@@ -253,7 +262,7 @@
     function fullReset() {
         totalScore = 0; correctWordCount = 0; completedLoops = 0; isFinished = false;
         timeLeft = gameTimeLimit;
-        totalKeystrokes = 0; totalErrors = 0; lastInputLen = 0; // 重置正確率變數
+        totalKeystrokes = 0; totalErrors = 0; lastInputLen = 0; 
         
         if (timerInterval) clearInterval(timerInterval);
         timerInterval = null;
@@ -284,7 +293,8 @@
 
     function updateUIStats() {
         document.getElementById('current-score').textContent = totalScore;
-        document.getElementById('correct-words').textContent = correctWordCount;
+        // 使用 Math.floor 確保畫面呈現乾淨的整數
+        document.getElementById('correct-words').textContent = Math.floor(correctWordCount);
         document.getElementById('timer').textContent = `${timeLeft}s`;
         const timeElapsed = gameTimeLimit - timeLeft;
         if (timeElapsed > 0) {
@@ -335,7 +345,7 @@
 
         const inputLen = inputValue.length;
 
-        // 計算正確率追蹤 (比較每次按鍵增長)
+        // 計算正確率追蹤
         if (inputLen > lastInputLen) {
             totalKeystrokes += (inputLen - lastInputLen);
             const typed = normalizeChar(inputValue[inputLen - 1]);
@@ -344,17 +354,26 @@
         }
         lastInputLen = inputLen;
 
-        let currentCorrectInThisLoop = "";
+        let correctChineseCount = 0;
+        let correctOtherCount = 0;
 
         for (let i = 0; i < targetText.length; i++) {
             const span = document.getElementById(`char-${i}`);
             if (!span) continue;
             span.classList.remove('current');
+            
             if (i < inputLen) {
-                const typed = normalizeChar(inputValue[i]), target = normalizeChar(targetText[i]);
+                const typed = normalizeChar(inputValue[i]);
+                const target = normalizeChar(targetText[i]);
                 if (typed === target) {
                     span.className = `char correct ${target === '\n' ? 'newline' : ''}`;
-                    currentCorrectInThisLoop += targetText[i];
+                    
+                    // 動態統計正確字元
+                    if (/[\u4e00-\u9fa5\u3105-\u312f]/.test(target)) {
+                        correctChineseCount++;
+                    } else if (target !== '\n' && target !== '\r') {
+                        correctOtherCount++;
+                    }
                 } else {
                     span.className = `char incorrect ${target === '\n' ? 'newline' : ''}`;
                 }
@@ -363,10 +382,12 @@
             }
         }
 
-        const wordsInCompleted = countWordsInString(targetText) * completedLoops;
-        const wordsInCurrent = countWordsInString(currentCorrectInThisLoop);
+        // 計算標準 WPM 字數
+        const wordsInCompleted = calculateStandardWords(targetText) * completedLoops;
+        const wordsInCurrent = correctChineseCount + (correctOtherCount / 5);
         correctWordCount = wordsInCompleted + wordsInCurrent;
-        totalScore = correctWordCount * 100;
+        
+        totalScore = Math.round(correctWordCount * 100);
         updateUIStats();
 
         // 完成一輪，自動刷新
@@ -402,7 +423,7 @@
         document.getElementById('summary-badge-icon').innerText = badge.icon;
         document.getElementById('summary-badge-title').innerText = badge.title;
         document.getElementById('summary-badge-quote').innerText = badge.quote;
-        document.getElementById('summary-words').innerText = correctWordCount;
+        document.getElementById('summary-words').innerText = Math.floor(correctWordCount);
         document.getElementById('summary-accuracy').innerText = accuracy;
         document.getElementById('summary-wpm').innerText = finalWpm;
 
@@ -413,10 +434,11 @@
         if (totalScore > 0 && totalScore > personalBest) {
             try {
                 await setDoc(doc(db, 'scores', currentUser.uid), {
-                    username, score: totalScore, words: correctWordCount, timestamp: serverTimestamp()
+                    // 資料庫儲存整數字數
+                    username, score: totalScore, words: Math.floor(correctWordCount), timestamp: serverTimestamp()
                 });
-                personalBest = totalScore; // 更新本地紀錄
-                recordMsg.classList.remove('hidden'); // 顯示破紀錄提示
+                personalBest = totalScore; 
+                recordMsg.classList.remove('hidden'); 
                 confetti({ particleCount: 150, spread: 80, origin: { y: 0.5 } });
             } catch (e) {
                 console.error("更新成績失敗", e);
